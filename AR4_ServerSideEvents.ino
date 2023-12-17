@@ -101,11 +101,14 @@ int wifiStatus = WL_IDLE_STATUS;
 unsigned long timeOfFirstUpdate;
 unsigned long timeOfLastUpdate;
 
+// The program displays on the Serial Monitor a one-line message on the client status at the specified intervals.
+const unsigned long PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS = 4000;
+
 //
 // SERVER-SENT DATA HANDLING
 //
 // You can experiment with these values.
-const unsigned long CONNECTION_TIME_LIMIT_SECONDS = 60;
+const unsigned long CONNECTION_TIME_LIMIT_SECONDS = 20;
 const unsigned long CONNECTION_UPDATE_RATE_MILLISECONDS = 400;
 
 
@@ -161,7 +164,7 @@ void PrintClientStatus( WiFiClient *pStreamClient )
 
 void LogClientStatusAtIntervals( WiFiClient *pStreamClient )
 {
-  if( (millis() - printUpdateTime) > 4000 )
+  if( (millis() - printUpdateTime) > PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS )
   {
     printUpdateTime = millis();
     PrintClientStatus( pStreamClient );
@@ -170,7 +173,7 @@ void LogClientStatusAtIntervals( WiFiClient *pStreamClient )
 
 
 
-// Try to update any active client(s) with stream data at the given interval.
+// Try to update the client with stream data at the given interval.
 void UpdateEventStreamAtStreamInterval( WiFiClient *pStreamClient, unsigned long millisecondUpdateTime, unsigned long connectionTimeLimitSeconds )
 {
   if( pStreamClient->connected() )
@@ -264,7 +267,8 @@ void loop() {
             pageRequest = "";
           }
 
-          // Break out of while() loop.
+          // Because we saw the end of a page request from the client,
+          // break out of while() loop.
           break;
         }
         if (c == '\n') {
