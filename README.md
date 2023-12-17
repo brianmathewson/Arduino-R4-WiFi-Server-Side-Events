@@ -1,7 +1,7 @@
 # Arduino-R4-WiFi-Server-Side-Events-Demonstration-Program
-#
-# Updated 2023 December 16 - Brian Mathewson
-#
+
+Updated 2023 December 16 - Brian Mathewson
+
 Demonstrates how to make the Uno R4 WiFi serve both a web page and service Server-Side Events (SSE).
 
 To run this program both the Uno and a WiFi-enabled device (mobile phone or PC) must be connected to the same WiFi access point.
