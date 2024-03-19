@@ -9,6 +9,9 @@
 #include "WiFiS3.h"
 
 
+//
+// This is sent to the client to initiate an event-stream data connection.
+//
 void SendEventStreamHeader( WiFiClient *targetClient )
 {
   targetClient->println("HTTP/1.1 200 OK");
@@ -18,22 +21,30 @@ void SendEventStreamHeader( WiFiClient *targetClient )
 }
 
 
-void SendEventStreamData( WiFiClient *targetClient, int idValue )
+// Send the Server Side Event (SSE) data to the client.
+//
+// The idValue
+//
+// You may customize this to send any data,
+// including multiple lines,
+// however do not send blank lines since this marks the end of the data.
+//
+void SendEventStreamData( WiFiClient *targetClient, int timeInTenthsOfASecond )
 {
   // Outputs
   int sensorReading = analogRead(0);
   targetClient->print("data: Analog input 0 :");
   targetClient->print(sensorReading);
   targetClient->print(" id=");
-  targetClient->print(idValue/10);
+  targetClient->print(timeInTenthsOfASecond/10);
   targetClient->print(".");
-  targetClient->print(idValue % 10);
+  targetClient->print(timeInTenthsOfASecond % 10);
 
   // Two end-of-line characters mark the end of the data field.
   targetClient->print(".\n\n");
 
-  Serial.print("Sending update id=");
-  Serial.println( idValue );
+  Serial.print("Sending update t=");
+  Serial.println( timeInTenthsOfASecond );
 }
 
 
@@ -51,6 +62,9 @@ void SendWebPageTop( WiFiClient *targetClient )
 {
   targetClient->println("<!DOCTYPE HTML>");
   targetClient->println("<html>");
+  // The following is supposed to suppress request of the favicon icon.
+  targetClient->println("<head><link rel=\"icon\" href=\"data:,\"></head>");
+
   targetClient->println("<body>");
 
   targetClient->println("<p style=\"font-size:2vw;\">Robot Alliance - SSE Test 2</p>");
@@ -64,15 +78,15 @@ void SendWebPageSSEArea( WiFiClient *targetClient )
 }
 
 
+// This script is sent with the web page sent to the client.
+// The client runs the script which initiates a request for data from the Uno R4.
+//
 void SendWebPageScript( WiFiClient *targetClient )
 {
   targetClient->println("<script>");
   targetClient->println("if(typeof(EventSource) !== \"undefined\") {");
   targetClient->println("  var source = new EventSource(\"getdata\");");
   targetClient->println("  source.onmessage = function(event) {");
-
-  // This APPENDS to the data in the DIV.
-  //  targetClient->println("    document.getElementById(\"result\").innerHTML += event.data + \"<br>\";");
 
   // This REPLACES the data in the DIV.
   targetClient->println("    document.getElementById(\"result\").innerHTML = event.data;");

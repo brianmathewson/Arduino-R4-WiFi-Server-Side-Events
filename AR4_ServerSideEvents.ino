@@ -11,6 +11,11 @@
 // Created:     2023 Dec 11
 // By:          Brian Mathewson
 //
+// Updated:     2024 March 18
+// By:          Brian Mathewson
+// Updates:     Supports multiple client connections when used with an updated version
+//              of the Uno 4 WiFi firmware, anything later than 0.3.0 (tested with 0.4.1).
+//
 // How it works
 //
 //              The Arduino Uno R4 WiFi first connects to the WiFi router yous specify
@@ -21,14 +26,14 @@
 //
 //              The code takes about 10 seconds to connect and will show you the IP address
 //              for connecting to the Uno R4, such as 192.168.6.120 (it could be almost any
-//              four numbers from 0 to 255 separated by dots).
+//              four numbers from 0 to 255 separated by dots). See the Serial Monitor at restart.
 //
 //              Important: After downloading the code, open the Serial Monitor and change
 //              the speed from 9600 baud (bits/s) to 115200 baud. 
 //
 //              The above all occurs in the setup() part of the code.
 //
-//              In the loop() code it waits for a connection from a client.
+//              The loop() code waits for a connection from a client.
 //              So, in a web browser enter:
 //                http://192.168.6.120     or whatever address you see in the Serial Monitor.
 //
@@ -37,17 +42,19 @@
 //              where it only shows the "/" with no name after it, since the web page you
 //              specified has nothing after the 120, for instance.
 //
-//              The Uno then sends the text of the web page as a reply to the client.
+//              The Uno, acting as a web server, then sends the text of the web page 
+//              as a reply to the client. 
 //              The Uno then closes the connection since it's done. 
-//              This also frees up a connection for SSE below...
+//              This also frees up a connection for Server Side Events.
 //
-//              The reply starts with a header identifying it as an HTML file.
-//              The web page text includes a short Javascript code area that, when it runs,
-//              sends a request back to the server indicating an event-stream request.
+//              This reply starts with a header identifying it as an HTML file.
+//              The web page text includes a short Javascript code area that, when it runs
+//              on the user's browser, sends a request back to the server indicating 
+//              an event-stream request.
 //
 //              When the Uno detects the request for an event-stream, which indicates it's
-//              a Server-Side Event connection, it sends a message back to the client.
-//              The SSE message to the client may include any sequence of text lines,
+//              a Server-Side Event connection, the Uno sends a data message back to the client.
+//              Each SSE message to the client may include any sequence of text lines,
 //              followed by an extra blank line to indicate the end of the SSE message.
 //              An example of what the Uno R4 server sends to the client (web browser):
 //
@@ -60,14 +67,21 @@
 //              Only UTF-8 characters are allowed, no binary since it could include 
 //              a double-newline character that incorrectly indicates the end of the message.
 //
-//              After a given timeout the Uno will close the connection, just as a 
-//              feature if needed.
+//              Code on the Uno cycles through its list of open client connections, 
+//              and it checks if it's time to send an update. This is a configurable interval.
+//              If so it sends the SSE message to the client and updates the time the
+//              last message was sent so it knows when to send the next one.
+//            
+//              After a configurable session timeout (by default just 20 seconds)
+//              the Uno will close the connection. This helps clean up old connections. 
+//              Generally if the client's web browser is still open then it will
+//              attempt to reconnect with the Uno, typically if 5 seconds has passed
+//              without an update. 
+//              A short (5 second) disruption in communication is usually observable. 
+//              You can modify the session timeout for your application. 
 //
-//              More work needs to be done to handle multiple requests from multiple clients.
-//              So this just shows you how the basic SSE mechanism works.
-//
-//              This example is written for a network using WPA encryption. For
-//              WEP or WPA, change the WiFi.begin() call accordingly.
+//              This example is written for a WiFi network using WPA encryption. 
+//              For WEP or WPA, change the WiFi.begin() call accordingly.
 //
 // Connections  Connect a variable voltage source, such as from a variable resistor,
 //              to the analog input pin A0 to see live updates of the reading. 
@@ -81,7 +95,9 @@
 
 #include "WiFiS3.h"
 
-// 
+using namespace std;
+
+// =================================================================================
 // WIRELESS GATEWAY CONNECTION
 //
 #include "arduino_secrets.h" 
@@ -92,27 +108,81 @@ int keyIndex = 0;                 // your network key index number (needed only 
 
 WiFiServer server(80);
 
+
+// =================================================================================
+// SERIAL MONITOR OUTPUT CONFIGURATION
 //
+
+// Set to 1 to show the full text of each HTTP message request from clients, 0 otherwise.
+int showPageRequests = 0;
+
+int activityOutputsEnabled = 0;
+int activityOutputsEnabledTrigger = 20;
+int freeClientIndex = 0;
+
+
+// =================================================================================
 // CLIENT CONNECTION HANDLING
 //
-String pageRequest;               // Holds text of the latest page request
 int wifiStatus = WL_IDLE_STATUS;
 
-unsigned long timeOfFirstUpdate;
-unsigned long timeOfLastUpdate;
-
-// The program displays on the Serial Monitor a one-line message on the client status at the specified intervals.
-const unsigned long PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS = 4000;
-
+// =================================================================================
+// CLIENT SSE CONNECTION HANDLING
 //
+// Support multiple simultaneous SSE clients.
+#define MAX_SSE_DATA_CLIENTS   3
+
+// Holds a WiFi connection and associated data so the code can serve multiple connections
+// simultaneously.
+struct SseDataClient
+{
+  WiFiClient client;
+  unsigned long timeOfFirstUpdate;
+  unsigned long timeOfLastUpdate;
+  String pageRequest;               // Holds text of the latest page request
+};
+
+struct SseDataClient dataClient[MAX_SSE_DATA_CLIENTS];
+
+// =================================================================================
+// CLIENT STATUS
+//
+// The program displays on the Serial Monitor a one-line message on the client status at the specified intervals.
+const unsigned long PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS = 333;
+
+// =================================================================================
 // SERVER-SENT DATA HANDLING
 //
 // You can experiment with these values.
 const unsigned long CONNECTION_TIME_LIMIT_SECONDS = 20;
-const unsigned long CONNECTION_UPDATE_RATE_MILLISECONDS = 400;
+const unsigned long CONNECTION_UPDATE_RATE_MILLISECONDS = 1000;
+
+
+// =================================================================================
+// DATA CLIENT HANDLING ROUTINES
+//
+
+
+void PrintWifiStatus() {
+  // print the SSID of the network you're attached to:
+  Serial.print("SSID: ");
+  Serial.println(WiFi.SSID());
+
+  // print your board's IP address:
+  IPAddress ip = WiFi.localIP();
+  Serial.print("IP Address: ");
+  Serial.println(ip);
+
+  // print the received signal strength:
+  long rssi = WiFi.RSSI();
+  Serial.print("signal strength (RSSI):");
+  Serial.print(rssi);
+  Serial.println(" dBm");
+}
 
 
 void setup() {
+  
   //Initialize serial and wait for port to open:
   Serial.begin(115200);
   while (!Serial) {
@@ -127,6 +197,11 @@ void setup() {
   }
 
   String fv = WiFi.firmwareVersion();
+  Serial.print("Firmware version: ");
+  Serial.println(fv);
+  Serial.print("Firmware latest version: ");
+  Serial.println( WIFI_FIRMWARE_LATEST_VERSION );
+
   if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
     Serial.println("Please upgrade the firmware");
   }
@@ -147,124 +222,319 @@ void setup() {
 }
 
 
-unsigned long printUpdateTime;
 
-void PrintClientStatus( WiFiClient *pStreamClient )
+void PrintClientStatus( SseDataClient *pStreamClient, int cIndex )
 {
-  Serial.print("At t=");
-  Serial.print( millis()) ;
-  Serial.print(" con= ");
-  Serial.print( pStreamClient->connected() );
-  Serial.print(" avail= ");
-  Serial.print( pStreamClient->available() );
-  Serial.print(" status= ");
-  Serial.println(pStreamClient->getTimeout() );
+  Serial.print("\t[");
+  Serial.print(cIndex);
+  Serial.print(":");
+  Serial.print( pStreamClient->timeOfFirstUpdate );
+  //  Serial.print(" upd= ");
+  //  Serial.print( pStreamClient->timeOfLastUpdate );
+  //  Serial.print(" avail= ");
+  //  Serial.println( pStreamClient->client.available() );
+  Serial.print("]");
 }
 
 
-void LogClientStatusAtIntervals( WiFiClient *pStreamClient )
+
+// The Uno 4 WiFi USB bridge firmware typically communicates with the ESP32
+// using a serial communications protocol, called a modem protocol.
+// This subroutine demonstrates how it can also be used at the application
+// level though it's not recommended.
+// The main reason to use this is if the ESP32 modem protocol supports something
+// that isn't supported by function calls using the WiFi bridge firmware.
+//
+void TryModem()
 {
-  if( (millis() - printUpdateTime) > PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS )
+  uint8_t rv = 0;
+  int socketNumber;
+  string res = "";
+
+  Serial.print("<modem>");
+  modem.begin();
+
+  Serial.print("<modem.write>");
+  if(modem.write(string(PROMPT(_AVAILABLE)),res, "%s%d\r\n" , CMD_WRITE(_AVAILABLE), socketNumber )) {
+    rv = atoi(res.c_str());
+    if (rv < 0) {
+        Serial.println("Avail was 0");
+    }
+    Serial.print("Avail was");
+    Serial.println(rv);
+  }
+  Serial.println("</modem>");
+}
+
+
+//
+// Shows the list of clients and whether any of them are active connections
+// and, if so, if there is pending data from the client available.
+//
+void LogDataClientStatusAtIntervals( int showAllNow = 0 )
+{
+  static unsigned long logDataClientUpdateTime;
+  int i;
+
+  if( ( (millis() - logDataClientUpdateTime) > PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS ) || (showAllNow > 0)  )
   {
-    printUpdateTime = millis();
-    PrintClientStatus( pStreamClient );
+    Serial.print("At t=");
+    Serial.print( millis() );
+    Serial.print(" ");
+    
+    logDataClientUpdateTime = millis();
+    for(i=0; i<MAX_SSE_DATA_CLIENTS; i++)
+    {
+      PrintClientStatus( &dataClient[i], i );
+    }
+
+    Serial.println();
+
+    // TryModem();
+
   }
 }
 
 
 
-// Try to update the client with stream data at the given interval.
-void UpdateEventStreamAtStreamInterval( WiFiClient *pStreamClient, unsigned long millisecondUpdateTime, unsigned long connectionTimeLimitSeconds )
+//
+// Update the client with stream data at the given interval.
+//
+// Note: The connectionIndex parameter is just for diagnosis.
+//
+void UpdateEventStreamAtStreamInterval( struct SseDataClient *pDataClient, unsigned long millisecondUpdateTime, unsigned long connectionTimeLimitSeconds, int connectionIndex )
 {
-  if( pStreamClient->connected() )
+  if( pDataClient->client.connected() )
   {
-    if( (millis() - timeOfLastUpdate) > millisecondUpdateTime )
+    // Check if it's time to send a new update.
+    if( (millis() - pDataClient->timeOfLastUpdate) > millisecondUpdateTime )
     {
-      timeOfLastUpdate = millis();
-      SendEventStreamData( pStreamClient, (timeOfLastUpdate / 100) );
+      // Refresh last update time
+      pDataClient->timeOfLastUpdate = millis();
+
+      SendEventStreamData( &pDataClient->client, (pDataClient->timeOfLastUpdate / 100) );
     }
 
-    // Close after 1 minute
-    if( (millis() - timeOfFirstUpdate) > (connectionTimeLimitSeconds*1000) )
+    // Stop the client after the specified connection time limit.
+    if( (millis() - pDataClient->timeOfFirstUpdate) > (connectionTimeLimitSeconds*1000) )
     {
       // Close connection.
-      pStreamClient->stop();
-      Serial.print("Server disconnected connection after ");
+      pDataClient->client.stop();
+      // Diagnostic output.
+      Serial.print("Server disconnected connection [");
+      Serial.print( connectionIndex );
+      Serial.print("] at ");
+      Serial.print( pDataClient->timeOfFirstUpdate );
+      Serial.print( " after " );
       Serial.print( connectionTimeLimitSeconds );
-      Serial.println(" seconds.");
+      Serial.println(" seconds");
+      // Zero these for consistency.
+      pDataClient->timeOfFirstUpdate = 0;
+      pDataClient->timeOfLastUpdate = 0;
     }
   }
 }
+
+
+int SelectNextClient()
+{
+  WiFiClient nextClient;
+  int i;
+  int selectedClientIndex = -1;
+  unsigned long oldestConnectionTime;
+  int oldestConnectionIndex;
+
+  oldestConnectionTime = millis();
+  oldestConnectionIndex = 0;
+
+  // Find an open connection OR the oldest connection
+  for(i=0; i<MAX_SSE_DATA_CLIENTS; i++)
+  {
+    if( dataClient[i].client.connected() )
+    {
+      // Find the oldest connection of all the connected clients
+      if( (dataClient[i].timeOfFirstUpdate < oldestConnectionTime) ) 
+      {
+        oldestConnectionTime = dataClient[i].timeOfFirstUpdate;
+        oldestConnectionIndex = i;
+      }
+    } else
+    {
+      // No connection, use this channel.
+      selectedClientIndex = i;
+    }
+  }
+
+  // If nothing's selected, pick the oldest one.
+  if( selectedClientIndex == -1 )
+  {
+    Serial.print( "[oldest cIdx=" );
+    Serial.print( oldestConnectionIndex );
+    Serial.println( "] " );
+    selectedClientIndex = oldestConnectionIndex;
+  }
+
+  // Check if any new data has arrived
+  nextClient = server.available();
+
+  // New data has arrived and/or a new client.  
+  if( nextClient ) 
+  {
+    // See if it matches an existing connected client.
+    for(i=0; i<MAX_SSE_DATA_CLIENTS; i++)
+    {
+      if( nextClient == dataClient[i].client ) 
+      {
+        selectedClientIndex = i;
+        break;    // break out of for() loop
+      }
+    }
+    // TODO
+    //  I wonder if selectedClientIndex will always be correct here?
+    //  If it finds a match just above, then it doesn't need to do this, right?  But maybe it's benign, just a second copy?
+    //  But if it uses selectedClientIndex from earlier (an open connection or the oldest)
+    //  then this step is fine.
+    dataClient[selectedClientIndex].client = nextClient;
+  }
+
+  return selectedClientIndex;
+}
+
+
+
+// Selects any open clients that are currently waiting for server-side events.
+// Returns:
+//  -1: no SSE channels open; do nothing
+//  0..(MAX_SSE_DATA_CLIENTS-1) : the channel index is open for SSE
+//
+// On repeated calls, cycles through all channels open for SSE.
+//
+int SelectCurrentClient()
+{
+  static int connectedClientIndex = 0;
+  int selectedClientIndex = -1;
+  int i;
+
+  // This looks for the next channel with an active connection. 
+  // If it finds one it exits the for loop. 
+  //
+  for( i=0; i<MAX_SSE_DATA_CLIENTS; i++ )
+  {
+    // Advance to the next index, in round-robin fasion.
+    connectedClientIndex = (connectedClientIndex + 1) % MAX_SSE_DATA_CLIENTS;
+  
+    // If this client channel indicates it's open for SSE, select it.
+    if( dataClient[connectedClientIndex].client.connected() && (dataClient[connectedClientIndex].timeOfFirstUpdate > 0) ) 
+    {
+      selectedClientIndex = connectedClientIndex;
+
+      // Exit the for() loop.
+      break;
+    }
+  }
+
+  return selectedClientIndex;
+}
+
 
 
 void loop() {
+  int i;
+  int serverUpdateChannelIndex;
+  
+  if( activityOutputsEnabledTrigger > 0 )
+  {
+    if( activityOutputsEnabledTrigger == 1 )
+    {
+      activityOutputsEnabled = 0;
+    } 
+    else
+    {
+      activityOutputsEnabled = 1;
+    }
+    activityOutputsEnabledTrigger -= 1;    // Can trigger multiple rounds
+  }
 
-  // listen for incoming clients
-  WiFiClient client = server.available();
-  if (client) {
+  // Select a client channel for receiving new connection requests from a client.
+  freeClientIndex = SelectNextClient();
 
-    // an HTTP request ends with a blank line
+  // If the client has a valid socket
+  if (dataClient[freeClientIndex].client) 
+  {
+    // An HTTP request ends with a blank line.
     boolean currentLineIsBlank = true;
 
-    if( client.connected() )
+    while ( dataClient[freeClientIndex].client.connected() )
     {
-      Serial.println("*** Client connect ***");
-    }
 
-    while ( client.connected() )
-    {
-      if (client.available() )  
+      if (dataClient[freeClientIndex].client.available() )  
       {
-        char c = client.read();
+        char c = dataClient[freeClientIndex].client.read();
 
         // Accumulate the full page request text.
-        pageRequest = pageRequest + c;
+        dataClient[freeClientIndex].pageRequest = dataClient[freeClientIndex].pageRequest + c;
 
-        // if you've gotten to the end of the line (received a newline
+        // If you've gotten to the end of the line (received a newline
         // character) and the line is blank, the HTTP request has ended,
-        // so you can send a reply
+        // so you can send a reply.
         if (c == '\n' && currentLineIsBlank) 
         {
+          // ProcessPageRequest( dataClient[freeClientIndex] );
+
+          // Print which client this is for.
+//          Serial.print("<<< Received msg cIdx=");
+//          Serial.print( freeClientIndex );
+//          Serial.println( " >>>");
+
           // Print the page request.
           Serial.println("<<< Page request start >>>");
-          Serial.print(pageRequest);
+          Serial.print(dataClient[freeClientIndex].pageRequest);
           Serial.println("<<< Page request end >>>");
 
           // If a GET / HTTP/1.1 page request
-          if( pageRequest.indexOf( "GET / HTTP" ) > -1 )
+          if( dataClient[freeClientIndex].pageRequest.indexOf( "GET / HTTP" ) > -1 )
           {
             Serial.println("*** Sending web page. ***");
 
             // Send a standard HTTP response header
-            SendHtmlHeader( &client );
+            SendHtmlHeader( &dataClient[freeClientIndex].client );
 
             // Send the web page
-            SendWebPageTop( &client );
-            SendWebPageScript( &client );
-            SendWebPageSSEArea( &client );
-            SendWebPageFooter( &client );
+            SendWebPageTop( &dataClient[freeClientIndex].client );
+            SendWebPageScript( &dataClient[freeClientIndex].client );
+            SendWebPageSSEArea( &dataClient[freeClientIndex].client );
+            SendWebPageFooter( &dataClient[freeClientIndex].client );
 
             // Close connection.
-            PrintClientStatus( &client );
-            client.stop();
-            Serial.println("HTTP client disconnect.");
-            PrintClientStatus( &client );
+            // PrintClientStatus( &dataClient[freeClientIndex].client );
+            LogDataClientStatusAtIntervals( 1 );
+            dataClient[freeClientIndex].client.stop();
+            Serial.println("*** HTTP client disconnect ***");
+            // For consistency
+            dataClient[freeClientIndex].timeOfFirstUpdate = 0;
+            dataClient[freeClientIndex].timeOfLastUpdate = 0;
+            // PrintClientStatus( &dataClient[freeClientIndex].client );
+            LogDataClientStatusAtIntervals( 1 );
 
-            pageRequest = "";
+            dataClient[freeClientIndex].pageRequest = "";
           }
 
           // If an event stream page request
-          if( pageRequest.indexOf( "event-stream" ) > -1 )
+          if( dataClient[freeClientIndex].pageRequest.indexOf( "event-stream" ) > -1 )
           {
-            Serial.println("*** SSE event-stream starting. ***");
+            Serial.println("SSE event-stream starting.");
 
-            SendEventStreamHeader( &client );
+            SendEventStreamHeader( &dataClient[freeClientIndex].client );
 
-            SendEventStreamData( &client, 1 );
-            timeOfFirstUpdate = millis();
-            timeOfLastUpdate = timeOfFirstUpdate;
+            SendEventStreamData( &dataClient[freeClientIndex].client, 0 );
 
-            pageRequest = "";
+            dataClient[freeClientIndex].timeOfFirstUpdate = millis();
+            dataClient[freeClientIndex].timeOfLastUpdate = dataClient[freeClientIndex].timeOfFirstUpdate;
+
+            dataClient[freeClientIndex].pageRequest = "";
+
+            // After a page request, turn on activity for a short time.
+//          activityOutputsEnabledTrigger = 5;
           }
 
           // Because we saw the end of a page request from the client,
@@ -280,35 +550,36 @@ void loop() {
         }
       } else
       {
-        // We have client.available() but no characters received from the client (no requests in process), 
-        // so send updates via SSE at the specified rate.
-        UpdateEventStreamAtStreamInterval( &client, CONNECTION_UPDATE_RATE_MILLISECONDS, CONNECTION_TIME_LIMIT_SECONDS );
+        break;
       }
-
-      // This logs the status while a connection is established.
-      LogClientStatusAtIntervals( &client );
     }
   }
+
+  // This logs the status while a connection is established.
+  LogDataClientStatusAtIntervals();
+
+  // 
+  // Send updates to active channels
+  //
+  serverUpdateChannelIndex = SelectCurrentClient();
+  if( serverUpdateChannelIndex >= 0 )
+  {
+    UpdateEventStreamAtStreamInterval( &dataClient[serverUpdateChannelIndex], CONNECTION_UPDATE_RATE_MILLISECONDS, CONNECTION_TIME_LIMIT_SECONDS, serverUpdateChannelIndex );
+  }
+
   // This logs the status when there is no connection.
-  LogClientStatusAtIntervals( &client );
-}
+  LogDataClientStatusAtIntervals();
 
+  //
+  // Triggers full activity output for a time.
+  //
+  if( Serial.read() == 'd' )
+  {
+    activityOutputsEnabledTrigger = 100;
+  }
 
-void PrintWifiStatus() {
-  // print the SSID of the network you're attached to:
-  Serial.print("SSID: ");
-  Serial.println(WiFi.SSID());
-
-  // print your board's IP address:
-  IPAddress ip = WiFi.localIP();
-  Serial.print("IP Address: ");
-  Serial.println(ip);
-
-  // print the received signal strength:
-  long rssi = WiFi.RSSI();
-  Serial.print("signal strength (RSSI):");
-  Serial.print(rssi);
-  Serial.println(" dBm");
+  // Slow the logging down for debugging
+  delay(50);
 }
 
 // End of program.
