@@ -1,7 +1,7 @@
 // File:      webpage_elements.h
 // Created:   2023 Dec 14
 // By:        Brian Mathewson
-// For:       WiFi project
+// For:       Arduino Server Side Events demonstration project
 //
 // Purpose:   Routines that generate HTML code.
 //
@@ -23,10 +23,11 @@ void SendEventStreamHeader( WiFiClient *targetClient )
 
 // Send the Server Side Event (SSE) data to the client.
 //
-// The idValue
+// The idValue is customary but optional. 
+// In this demo program the ID is the time since the program started.
 //
-// You may customize this to send any data,
-// including multiple lines,
+// The data is a single line of text but multiple data: lines may be sent.
+// You may customize this to send any data, including multiple lines,
 // however do not send blank lines since this marks the end of the data.
 //
 void SendEventStreamData( WiFiClient *targetClient, int timeInTenthsOfASecond )
@@ -35,7 +36,7 @@ void SendEventStreamData( WiFiClient *targetClient, int timeInTenthsOfASecond )
   int sensorReading = analogRead(0);
   targetClient->print("data: Analog input 0 :");
   targetClient->print(sensorReading);
-  targetClient->print(" id=");
+  targetClient->print(" at t=");
   targetClient->print(timeInTenthsOfASecond/10);
   targetClient->print(".");
   targetClient->print(timeInTenthsOfASecond % 10);
@@ -48,6 +49,10 @@ void SendEventStreamData( WiFiClient *targetClient, int timeInTenthsOfASecond )
 }
 
 
+// =====================================================================
+// Web Page Sent to Clients
+// 
+
 void SendHtmlHeader( WiFiClient *targetClient )
 {
   // HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)
@@ -58,6 +63,9 @@ void SendHtmlHeader( WiFiClient *targetClient )
 }
 
 
+//
+// Customize this
+//
 void SendWebPageTop( WiFiClient *targetClient )
 {
   targetClient->println("<!DOCTYPE HTML>");
@@ -67,10 +75,17 @@ void SendWebPageTop( WiFiClient *targetClient )
 
   targetClient->println("<body>");
 
-  targetClient->println("<p style=\"font-size:2vw;\">Robot Alliance - SSE Test 2</p>");
+  targetClient->println("<p style=\"font-size:2vw;\">Arduino UNO SSE Test</p>");
 }
 
 
+// The web page could do anything with the SSE data it receives.
+//   Here the data is presented between the characters "DIV[" and "]"
+//   so you can see clearly the extent of the data.
+//
+// The division ID is named "result".
+// This name is used in the web page script to insert data into this div.
+//
 void SendWebPageSSEArea( WiFiClient *targetClient )
 {
   targetClient->println("DIV[<div id=\"result\"></div>]DIV" );
@@ -78,8 +93,12 @@ void SendWebPageSSEArea( WiFiClient *targetClient )
 }
 
 
-// This script is sent with the web page sent to the client.
-// The client runs the script which initiates a request for data from the Uno R4.
+// This script is part of the web page sent to the client.
+// The client web browser runs the script which initiates a request 
+//   for data from the Uno.
+// The script also defines a function to be called whenever an event source
+//   data message is received. This function sets the web page element 
+//   called "result" with the contents of the received data. 
 //
 void SendWebPageScript( WiFiClient *targetClient )
 {

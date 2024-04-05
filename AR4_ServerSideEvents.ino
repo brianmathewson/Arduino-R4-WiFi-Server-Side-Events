@@ -1,35 +1,57 @@
-// File:        AR4_ServerSideEvents.ino
-
+// File:        ServerSideEvents.ino
+//
+// Platform:    Arduino R4 WiFi
+//              Firmware version 4.1 or later
+//              GitHub
+//
 // Purpose:     Demonstrate how an Arduino R4 WiFi can implement server-side events (SSE).
 //              SSE is a method for a server to continually send updated data to a client.
 //              In this case the Uno R4 acts as the server.
 //              The client is any web browser.
 //              Both must be connected by WiFi to the same WiFi router, 
 //              although router settings may be modified to allow connections from
-//              clients beyond this.
+//              clients beyond this (see Port Forwarding).
 //
-// Created:     2023 Dec 11
-// By:          Brian Mathewson
+// Copyright © 2024 Brian B. Mathewson
 //
-// Updated:     2024 March 18
+// Permission is hereby granted, free of charge, to any person obtaining a copy 
+// of this software and associated documentation files (the “Software”), to deal 
+// in the Software without restriction, including without limitation the rights 
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+// copies of the Software, and to permit persons to whom the Software is 
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in 
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
+// SOFTWARE.
+//
+// Updated:     2024 March 23
 // By:          Brian Mathewson
-// Updates:     Supports multiple client connections when used with an updated version
-//              of the Uno 4 WiFi firmware, anything later than 0.3.0 (tested with 0.4.1).
+// Updates:     Supports multiple concurrent client connections when used with 
+//              Uno 4 WiFi firmware 0.4.1 or later. May not support multiple
+//              concurrent connections with 0.3.x or earlier.
 //
 // How it works
 //
-//              The Arduino Uno R4 WiFi first connects to the WiFi router yous specify
+//              The Arduino Uno R4 WiFi first connects to the WiFi router you specify
 //              in the separate arduino_secrets.h file. In this file enter the SSID and password
 //              for your particular WiFi access point. As an example it could be like
 //                #define SECRET_SSID "SantaClauseHouseWiFi"     (THESE ARE EXAMPLES ONLY!!!)
 //                #define SECRET_PASS "MySecret8-ReindeerPassword"
 //
-//              The code takes about 10 seconds to connect and will show you the IP address
-//              for connecting to the Uno R4, such as 192.168.6.120 (it could be almost any
-//              four numbers from 0 to 255 separated by dots). See the Serial Monitor at restart.
+//              The code takes about 10 seconds to connect.
+//              The IP address for connecting to the Uno R4, such as 192.168.6.120 (it could be almost
+//              any four numbers from 0 to 255 separated by dots), is shown in the Serial Monitor
+//              when the Uno restarts.
 //
-//              Important: After downloading the code, open the Serial Monitor and change
-//              the speed from 9600 baud (bits/s) to 115200 baud. 
+//              Important: Open the Serial Monitor and change the speed from 9600 baud (bits/s) to 115200 baud. 
 //
 //              The above all occurs in the setup() part of the code.
 //
@@ -37,33 +59,33 @@
 //              So, in a web browser enter:
 //                http://192.168.6.120     or whatever address you see in the Serial Monitor.
 //
-//              The code will identify the request for a default web page by seeing
+//              The SSE code will identify the request for a default web page by seeing
 //                GET / HTTP/1.1
 //              where it only shows the "/" with no name after it, since the web page you
 //              specified has nothing after the 120, for instance.
 //
 //              The Uno, acting as a web server, then sends the text of the web page 
 //              as a reply to the client. 
-//              The Uno then closes the connection since it's done. 
+//              The Uno then closes the connection since it's done sending the web page. 
 //              This also frees up a connection for Server Side Events.
 //
-//              This reply starts with a header identifying it as an HTML file.
+//              The Uno sends a web page with a header identifying it as an HTML file.
 //              The web page text includes a short Javascript code area that, when it runs
-//              on the user's browser, sends a request back to the server indicating 
+//              on the user's browser, sends a request back to the server (Uno) indicating 
 //              an event-stream request.
 //
 //              When the Uno detects the request for an event-stream, which indicates it's
 //              a Server-Side Event connection, the Uno sends a data message back to the client.
-//              Each SSE message to the client may include any sequence of text lines,
+//              Each data message to the client may include any sequence of text lines,
 //              followed by an extra blank line to indicate the end of the SSE message.
-//              An example of what the Uno R4 server sends to the client (web browser):
+//              An example of what the Uno server sends to the client (web browser):
 //
-//                | id: 123
-//                | data: Analog input 0 :562 id=1479.6.
+//                | id: 14796
+//                | data: Analog input 0 :562 at t=1479.6.
 //                |
 //
-//              These three lines (ignore the initial "| ") are sent by this demo program.
-//              The id is not necessary. More data lines can be added.
+//              These three lines (indicated by the initial "| ") are sent by this demo program.
+//              The id is customary but not necessary. More data lines can be added.
 //              Only UTF-8 characters are allowed, no binary since it could include 
 //              a double-newline character that incorrectly indicates the end of the message.
 //
@@ -101,7 +123,7 @@ using namespace std;
 // WIRELESS GATEWAY CONNECTION
 //
 #include "arduino_secrets.h" 
-///////please enter your sensitive data in the Secret tab/arduino_secrets.h
+///////please enter your sensitive data in the tab arduino_secrets.h
 char ssid[] = SECRET_SSID;        // your network SSID (name)
 char pass[] = SECRET_PASS;        // your network password (use for WPA, or use as key for WEP)
 int keyIndex = 0;                 // your network key index number (needed only for WEP)
@@ -148,14 +170,14 @@ struct SseDataClient dataClient[MAX_SSE_DATA_CLIENTS];
 // CLIENT STATUS
 //
 // The program displays on the Serial Monitor a one-line message on the client status at the specified intervals.
-const unsigned long PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS = 333;
+const unsigned long PRINT_CLIENT_STATUS_INTERVAL_MILLISECONDS = 250;
 
 // =================================================================================
 // SERVER-SENT DATA HANDLING
 //
 // You can experiment with these values.
 const unsigned long CONNECTION_TIME_LIMIT_SECONDS = 20;
-const unsigned long CONNECTION_UPDATE_RATE_MILLISECONDS = 1000;
+const unsigned long CONNECTION_UPDATE_RATE_MILLISECONDS = 100;
 
 
 // =================================================================================
@@ -205,6 +227,23 @@ void setup() {
   if (fv < WIFI_FIRMWARE_LATEST_VERSION) {
     Serial.println("Please upgrade the firmware");
   }
+
+  byte mac[6];                     // the MAC address of your Wifi shield
+
+  WiFi.macAddress(mac);
+  Serial.print("MAC: ");
+  Serial.print(mac[5],HEX);
+  Serial.print(":");
+  Serial.print(mac[4],HEX);
+  Serial.print(":");
+  Serial.print(mac[3],HEX);
+  Serial.print(":");
+  Serial.print(mac[2],HEX);
+  Serial.print(":");
+  Serial.print(mac[1],HEX);
+  Serial.print(":");
+  Serial.println(mac[0],HEX);
+
 
   // attempt to connect to WiFi network:
   while ( wifiStatus != WL_CONNECTED) {
@@ -397,6 +436,14 @@ int SelectNextClient()
     dataClient[selectedClientIndex].client = nextClient;
   }
 
+  if( activityOutputsEnabled )
+  {
+    Serial.print("sCI:");
+    Serial.print(selectedClientIndex);
+    Serial.print(" nc=");
+    Serial.println( nextClient );
+  }
+
   return selectedClientIndex;
 }
 
@@ -555,9 +602,6 @@ void loop() {
     }
   }
 
-  // This logs the status while a connection is established.
-  LogDataClientStatusAtIntervals();
-
   // 
   // Send updates to active channels
   //
@@ -567,15 +611,22 @@ void loop() {
     UpdateEventStreamAtStreamInterval( &dataClient[serverUpdateChannelIndex], CONNECTION_UPDATE_RATE_MILLISECONDS, CONNECTION_TIME_LIMIT_SECONDS, serverUpdateChannelIndex );
   }
 
-  // This logs the status when there is no connection.
+  // This logs the status while a connection is established.
   LogDataClientStatusAtIntervals();
 
   //
-  // Triggers full activity output for a time.
+  // User commands from the serial port
   //
-  if( Serial.read() == 'd' )
+  char userCommand;
+  userCommand = Serial.read();
+  if( userCommand == 'd' )
   {
+    // Triggers full activity output for a time.
     activityOutputsEnabledTrigger = 100;
+  }
+  if( userCommand == 'm' )
+  {
+    TryModem();
   }
 
   // Slow the logging down for debugging
